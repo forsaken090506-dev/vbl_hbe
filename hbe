@@ -1,0 +1,96 @@
+-- VL Hitbox V2 | Client-side visualization and practice overlay
+-- Requires an executor that supports getgenv and Drawing for the 2D ring.
+-- The 3D sphere is visual-only (CanQuery/CanTouch/CanCollide = false).
+local env = getgenv and getgenv() or _G
+if env.VLHitboxV2 and env.VLHitboxV2.cleanup then pcall(env.VLHitboxV2.cleanup) end
+if env.VLHitbox and env.VLHitbox.render then
+    local old = env.VLHitbox
+    for _, c in ipairs({old.render, old.added, old.removed}) do pcall(function() if c then c:Disconnect() end end) end
+    for _, d in pairs(old.balls or {}) do pcall(function() if d.box then d.box:Destroy() end if d.ring then d.ring:Remove() end end) end
+    env.VLHitbox = nil
+end
+
+local Players = game:GetService('Players')
+local CS = game:GetService('CollectionService')
+local RS = game:GetService('RunService')
+local UIS = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local HttpService = game:GetService('HttpService')
+local player = Players.LocalPlayer
+local guiParent = player:WaitForChild('PlayerGui')
+local alive, connections, balls, uiTweens = true, {}, {}, {}
+local saveFile = 'VLHitboxV2_settings.json'
+local defaults = { radius=10, opacity=0.22, enabled=true, show3D=true, show2D=true, frameCap=45, profile='Default' }
+local profiles = {Default=table.clone(defaults), Competitive=table.clone(defaults), Minimal=table.clone(defaults)}
+profiles.Competitive.radius=7
+profiles.Minimal.show3D=false
+profiles.Minimal.radius=6
+local settings = table.clone(defaults)
+local function safeRead()
+    if not (readfile and isfile and isfile(saveFile)) then return end
+    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(saveFile)) end)
+    if not ok or type(data)~='table' then return end
+    if type(data.profiles)=='table' then
+        for name, profile in pairs(data.profiles) do
+            if profiles[name] and type(profile)=='table' then
+                for k,v in pairs(defaults) do if type(profile[k])==type(v) then profiles[name][k]=profile[k] end end
+            end
+        end
+    end
+    if type(data.active)=='string' and profiles[data.active] then settings.profile=data.active end
+    for k,v in pairs(profiles[settings.profile]) do if k~='profile' then settings[k]=v end end
+end
+safeRead()
+local function persist()
+    if not writefile then return end
+    local profile = profiles[settings.profile]
+    if profile then for k,v in pairs(settings) do if k~='profile' then profile[k]=v end end end
+    pcall(function() writefile(saveFile, HttpService:JSONEncode({active=settings.profile, profiles=profiles})) end)
+end
+local function track(c) connections[#connections+1]=c return c end
+local function new(class, properties, parent)
+    local obj=Instance.new(class)
+    for k,v in pairs(properties or {}) do obj[k]=v end
+    obj.Parent=parent
+    return obj
+end
+local palette={bg=Color3.fromRGB(17,27,42), surface=Color3.fromRGB(31,46,66), edge=Color3.fromRGB(76,107,132), text=Color3.fromRGB(228,244,255), dim=Color3.fromRGB(154,184,207), accent=Color3.fromRGB(53,226,246)}
+local function corner(o,r) new('UICorner',{CornerRadius=UDim.new(0,r or 12)},o) end
+local function stroke(o) new('UIStroke',{Color=palette.edge,Thickness=1,Transparency=0.35},o) end
+local gui=new('ScreenGui',{Name='VLHitboxV2',ResetOnSpawn=false,IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling},guiParent)
+local panel=new('Frame',{Name='GlassDashboard',Size=UDim2.fromOffset(380,445),Position=UDim2.new(0.5,-190,0.5,-222),BackgroundColor3=palette.bg,BackgroundTransparency=0.08,BorderSizePixel=0,Active=true},gui)
+corner(panel,16) stroke(panel)
+new('UIGradient',{Rotation=125,Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(40,66,88)),ColorSequenceKeypoint.new(1,palette.bg)})},panel)
+local header=new('Frame',{Size=UDim2.new(1,0,0,64),BackgroundTransparency=1},panel)
+new('TextLabel',{Size=UDim2.new(1,-70,0,30),Position=UDim2.fromOffset(20,10),BackgroundTransparency=1,Text='VL  /  HITBOX V2',Font=Enum.Font.GothamBold,TextSize=20,TextXAlignment=Enum.TextXAlignment.Left,TextColor3=palette.text},header)
+new('TextLabel',{Size=UDim2.new(1,-70,0,20),Position=UDim2.fromOffset(20,36),BackgroundTransparency=1,Text='VISUAL PRACTICE DASHBOARD',Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,TextColor3=palette.dim},header)
+local close=new('TextButton',{Size=UDim2.fromOffset(30,30),Position=UDim2.new(1,-44,0,16),BackgroundColor3=palette.surface,Text='–',TextSize=20,TextColor3=palette.text,Font=Enum.Font.GothamBold},header)
+corner(close,9)
+local body=new('Frame',{Size=UDim2.new(1,-32,1,-82),Position=UDim2.fromOffset(16,70),BackgroundTransparency=1},panel)
+new('UIListLayout',{Padding=UDim.new(0,9),SortOrder=Enum.SortOrder.LayoutOrder},body)
+local function line(height)
+    local f=new('Frame',{Size=UDim2.new(1,0,0,height),BackgroundColor3=palette.surface,BackgroundTransparency=0.22,BorderSizePixel=0},body)
+    corner(f,10) stroke(f)
+    return f
+end
+local function label(parent,text,x,w)
+    return new('TextLabel',{Position=UDim2.fromOffset(x or 12,0),Size=UDim2.new(0,w or 180,1,0),BackgroundTransparency=1,Text=text,Font=Enum.Font.GothamMedium,TextSize=13,TextXAlignment=Enum.TextXAlignment.Left,TextColor3=palette.text},parent)
+end
+local function button(parent,text,width)
+    local b=new('TextButton',{Size=UDim2.fromOffset(width or 105,30),Position=UDim2.new(1,-(width or 105)-9,0.5,-15),BackgroundColor3=palette.accent,TextColor3=palette.bg,Font=Enum.Font.GothamBold,TextSize=12,Text=text,AutoButtonColor=true},parent)
+    corner(b,8)
+    return b
+end
+local statusRow=line(42); label(statusRow,'Visualization')
+local status=button(statusRow,'ON',94)
+local sphereRow=line(42); label(sphereRow,'3D sphere'); local sphereBtn=button(sphereRow,'ON',94)
+local ringRow=line(42); label(ringRow,'2D circle'); local ringBtn=button(ringRow,'ON',94)
+local radiusRow=line(64)
+local radiusText=label(radiusRow,'Radius: 10 studs',12,200); radiusText.Size=UDim2.new(1,-24,0,28)
+local trackBg=new('Frame',{Position=UDim2.new(0,12,0,42),Size=UDim2.new(1,-24,0,6),BackgroundColor3=palette.edge,BorderSizePixel=0},radiusRow);corner(trackBg,4)
+local fill=new('Frame',{Size=UDim2.fromScale(0.3,1),BackgroundColor3=palette.accent,BorderSizePixel=0},trackBg);corner(fill,4)
+local knob=new('TextButton',{Size=UDim2.fromOffset(16,16),Position=UDim2.new(0.3,-8,0.5,-8),Text='',BackgroundColor3=palette.text,BorderSizePixel=0},trackBg);corner(knob,8)
+local profileRow=line(42); label(profileRow,'Profile');local profileBtn=button(profileRow,'Default',125)
+local fpsRow=line(42);label(fpsRow,'Tracked balls');local countLabel=label(fpsRow,'0',280,50)
+local footer=new('TextLabel',{Size=UDim2.new(1,0,0,20),BackgroundTransparency=1,Text='RightShift: toggle panel  •  Drag to move',TextColor3=palette.dim,Font=Enum.Font.Gotham,TextSize=11},body)
+local function updateUI()
